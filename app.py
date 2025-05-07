@@ -122,13 +122,19 @@ if question:
     qa_id = len(st.session_state.chat_history)
     st.session_state.chat_history.append({"question": question, "answer": answer})
 
-    # Prompt for feedback immediately
+    rating_key = f"rating_{idx}"
+    save_key = f"saved_{idx}"
+
+    # Display rating option
     rating = st.radio(
-        f"Rate this answer (Prompt #{qa_id + 1})", ["👍", "👎"], key=f"rating_{qa_id}", horizontal=True
+        f"Rate this answer (Prompt #{idx + 1})",
+        ["👍", "👎"],
+        key=rating_key,
+        horizontal=True,
     )
 
-    # Save immediately once a rating is chosen
-    if f"saved_{qa_id}" not in st.session_state and rating in ["👍", "👎"]:
-        save_feedback(question, answer, rating)
-        st.session_state[f"saved_{qa_id}"] = True
-        # st.success("✅ Feedback saved")
+    # Save only if rating is selected and hasn't been saved yet
+    if rating in ["👍", "👎"] and not st.session_state.get(save_key):
+        save_feedback(msg["question"], msg["answer"], rating)
+        st.session_state[save_key] = True
+        st.success("✅ Feedback saved")
