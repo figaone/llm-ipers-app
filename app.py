@@ -1,68 +1,57 @@
 import streamlit as st
 from openai import OpenAI
 from elasticsearch import Elasticsearch
-from dotenv import load_dotenv
 from keybert import KeyBERT
 import tiktoken
 import os
+from datetime import datetime
 import json
+from streamlit_feedback import streamlit_feedback
 
-
-
-# Use secrets instead of dotenv
+# ---- Config ----
 es = Elasticsearch(st.secrets["ES_CLOUD_URL"], api_key=st.secrets["ES_API_KEY"])
 client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-
-# Create ES client
-# es = Elasticsearch(
-#     ES_CLOUD_URL,
-#     api_key=ES_API_KEY,
-# )
-
-
-# client = OpenAI(api_key=OPENAI_API_KEY)
 index_name = "ocr_documents_pages"
 enc = tiktoken.encoding_for_model("gpt-4")
 kw_model = KeyBERT(model="all-MiniLM-L6-v2")
-
-# ---- Feedback log file ----
 FEEDBACK_LOG_PATH = "feedback_log.json"
 
-# ---- Utility Functions ----
+# ---- Helpers ----
 def extract_keywords(text, top_k=15):
-    return [kw[0].lower() for kw in kw_model.extract_keywords(text, top_n=top_k, stop_words='english')]
+    return [kw[0].lower() for kw in kw_model.extract_keywords(text, top_n=top_k, stop_words="english")]
 
 def query_elasticsearch(question, max_docs=200, max_tokens=90000):
     keywords = extract_keywords(question)
-    should_clauses = [{"match": {"content": kw}} for kw in keywords]
-
-    res = es.search(index=index_name, size=max_docs, query={"bool": {"should": should_clauses, "minimum_should_match": 1}})
-    if len(res["hits"]["hits"]) == 0:
+    should = [{"match": {"content": kw}} for kw in keywords]
+    res = es.search(
+        index=index_name,
+        size=max_docs,
+        query={"bool": {"should": should, "minimum_should_match": 1}}
+    )
+    if not res["hits"]["hits"]:
         res = es.search(index=index_name, size=max_docs, query={"match": {"content": {"query": question}}})
-    if len(res["hits"]["hits"]) == 0:
+    if not res["hits"]["hits"]:
         res = es.search(index=index_name, size=max_docs, query={"match_all": {}})
-
     total_tokens, docs = 0, []
     for hit in res["hits"]["hits"]:
         src = hit["_source"]
-        meta = (
-            f"Investment Period: {src.get('investment_period', 'N/A')}, "
-            f"Document Group: {src.get('document_group', 'N/A')}, "
-            f"Document ID: {src.get('document_id', 'N/A')}, "
-            f"Pages: {src.get('page_numbers', 'N/A')}"
-        )
-        content = src.get("content", "")
+        content = src.get("content","")
         tokens = len(enc.encode(content))
         if total_tokens + tokens > max_tokens:
             break
+        meta = (
+            f"Investment Period: {src.get('investment_period','N/A')}, "
+            f"Document Group: {src.get('document_group','N/A')}, "
+            f"Document ID: {src.get('document_id','N/A')}, "
+            f"Pages: {src.get('page_numbers','N/A')}"
+        )
         docs.append(f"{meta}\n{content}")
         total_tokens += tokens
     return "\n\n".join(docs)
 
-def ask_gpt_with_context(question):
-    context = query_elasticsearch(question)
-    prompt = f"""
-You are an AI assistant specialized in analyzing OCR-processed investment documents for IPERS.
+def ask_gpt_with_context(prompt):
+    context = query_elasticsearch(prompt)
+    system = f"""You are an AI assistant specialized in analyzing OCR-processed investment documents for IPERS.
 
 Use the full content below to answer the user's question concisely and accurately.
 
@@ -70,71 +59,87 @@ Use the full content below to answer the user's question concisely and accuratel
 {context}
 
 --- Question ---
-{question}
+{prompt}
 
-**Answer briefly and clearly:**
-"""
-    response = client.chat.completions.create(
-        model="gpt-4o", messages=[{"role": "user", "content": prompt}], max_tokens=1000,
+**Answer briefly and clearly:**"""
+    resp = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[{"role":"user","content":system}],
+        max_tokens=1000,
     )
-    return response.choices[0].message.content.strip()
+    return resp.choices[0].message.content.strip()
 
-def save_feedback(prompt, answer, rating):
-    feedback_entry = {"prompt": prompt, "answer": answer, "rating": rating}
+def append_feedback_log(entry: dict):
     if os.path.exists(FEEDBACK_LOG_PATH):
         with open(FEEDBACK_LOG_PATH, "r") as f:
-            history = json.load(f)
+            data = json.load(f)
     else:
-        history = []
-    history.append(feedback_entry)
+        data = []
+    data.append(entry)
     with open(FEEDBACK_LOG_PATH, "w") as f:
-        json.dump(history, f, indent=2)
+        json.dump(data, f, indent=2)
 
-# ---- Streamlit UI ----
+# ---- UI ----
 st.set_page_config(page_title="IPERS OCR Chatbot", layout="wide")
+st.sidebar.title("Feedback log")
+if os.path.exists(FEEDBACK_LOG_PATH):
+    with open(FEEDBACK_LOG_PATH, "r") as f:
+        log_content = f.read()
+    st.sidebar.download_button("⬇️ Download feedback log", log_content, file_name="feedback_log.json")
+
 st.title("📄 IPERS Document Chatbot")
-st.caption("Ask questions about OCR'd IPERS investment documents")
+st.caption("Ask questions about OCR’d IPERS investment documents")
 
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
+if "history" not in st.session_state:
+    st.session_state.history = []
 
-for idx, msg in enumerate(st.session_state.chat_history):
-    st.chat_message("user").write(msg["question"])
-    st.chat_message("assistant").write(msg["answer"])
-
-    # Rating input
-    rating = st.radio(
-        f"Rate this answer (Prompt #{idx + 1})", ["👍", "👎"], key=f"rating_{idx}", horizontal=True
+# render chat history
+for idx, m in enumerate(st.session_state.history):
+    st.chat_message("user").write(m["prompt"])
+    st.chat_message("assistant").write(m["answer"])
+    # attach feedback widget if not yet given
+    feedback = m.get("feedback", None)
+    st.session_state[f"feedback_{idx}"] = feedback
+    st.feedback(
+        "thumbs",
+        key=f"feedback_{idx}",
+        disabled=feedback is not None,
+        on_change=lambda i=idx: save_feedback(i),
+        args=[idx],
     )
-    if f"saved_{idx}" not in st.session_state:
-        save_feedback(msg["question"], msg["answer"], rating)
-        st.session_state[f"saved_{idx}"] = True
-        st.success("✅ Feedback saved")
 
-question = st.chat_input("Ask a question about IPERS documents...")
+def save_feedback(index):
+    fb = st.session_state.get(f"feedback_{index}")
+    if fb is None:
+        return
+    # update in-memory history
+    msg = st.session_state.history[index]
+    msg["feedback"] = fb
+    # append to disk
+    entry = {
+        "timestamp": datetime.utcnow().isoformat(),
+        "prompt": msg["prompt"],
+        "answer": msg["answer"],
+        "feedback": fb
+    }
+    append_feedback_log(entry)
+    st.toast("✅ Feedback recorded!")
 
-if question:
-    st.chat_message("user").write(question)
-    answer = ask_gpt_with_context(question)
+# new user input
+if prompt := st.chat_input("Ask a question..."):
+    st.chat_message("user").write(prompt)
+    answer = ask_gpt_with_context(prompt)
     st.chat_message("assistant").write(answer)
 
-    # Store question-answer pair temporarily for rating
-    qa_id = len(st.session_state.chat_history)
-    st.session_state.chat_history.append({"question": question, "answer": answer})
+    # add to history
+    st.session_state.history.append({"prompt": prompt, "answer": answer})
+    idx = len(st.session_state.history) - 1
 
-    rating_key = f"rating_{idx}"
-    save_key = f"saved_{idx}"
-
-    # Display rating option
-    rating = st.radio(
-        f"Rate this answer (Prompt #{idx + 1})",
-        ["👍", "👎"],
-        key=rating_key,
-        horizontal=True,
+    # immediate feedback widget for the new response
+    st.session_state[f"feedback_{idx}"] = None
+    st.feedback(
+        "thumbs",
+        key=f"feedback_{idx}",
+        on_change=lambda i=idx: save_feedback(i),
+        args=[idx],
     )
-
-    # Save only if rating is selected and hasn't been saved yet
-    if rating in ["👍", "👎"] and not st.session_state.get(save_key):
-        save_feedback(msg["question"], msg["answer"], rating)
-        st.session_state[save_key] = True
-        st.success("✅ Feedback saved")
