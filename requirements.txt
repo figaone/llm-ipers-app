@@ -13,3 +13,5 @@ sentence-transformers
 scikit-learn
 tiktoken
 streamlit-feedback
+firebase-admin
+pyrebase4

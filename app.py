@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 from openai import OpenAI
 from elasticsearch import Elasticsearch
 from keybert import KeyBERT
@@ -7,6 +8,86 @@ import os
 from datetime import datetime
 import json
 from streamlit_feedback import streamlit_feedback
+import pyrebase
+import firebase_admin
+from firebase_admin import credentials, auth as admin_auth, firestore
+
+
+import streamlit as st
+import pyrebase
+import firebase_admin
+from firebase_admin import credentials, auth as admin_auth, firestore
+import json
+
+# ─────────────────────────────────────────────────────────────
+# 1️⃣ This MUST be the very first Streamlit call
+st.set_page_config(page_title="IPERS OCR Chatbot", layout="wide")
+# ─────────────────────────────────────────────────────────────
+
+# 2️⃣ Firebase Admin + Pyrebase setup
+sa       = json.loads(st.secrets["firebase"]["firebase_service_account"])
+if not firebase_admin._apps:
+    firebase_admin.initialize_app(credentials.Certificate(sa))
+firebase_db = firestore.client()
+
+pb_cfg = {
+    "apiKey":            st.secrets["FIREBASE"]["apiKey"],
+    "authDomain":        st.secrets["FIREBASE"]["authDomain"],
+    "databaseURL":       st.secrets["FIREBASE"]["databaseURL"],
+    "projectId":         st.secrets["FIREBASE"]["projectId"],
+    "storageBucket":     st.secrets["FIREBASE"]["storageBucket"],
+    "messagingSenderId": st.secrets["FIREBASE"]["messagingSenderId"],
+    "appId":             st.secrets["FIREBASE"]["appId"],
+}
+pb      = pyrebase.initialize_app(pb_cfg)
+fb_auth = pb.auth()
+
+## ─── LOGIN / SIGNUP GATE ───
+if "user" not in st.session_state:
+    st.title("🔐 IPERS OCR Chatbot — Login / Sign-up")
+    mode  = st.radio("Action", ["Login", "Sign up"])
+    email = st.text_input("Email", key="auth_email")
+    pwd   = st.text_input("Password", type="password", key="auth_pwd")
+
+    if mode == "Sign up":
+        if st.button("Create account"):
+            try:
+                fb_auth.create_user_with_email_and_password(email, pwd)
+                st.success("Account created! Now switch to **Login** above.")
+            except Exception as e:
+                st.error(f"Sign-up failed: {e}")
+
+    else:  # Login
+        if st.button("Login"):
+            try:
+                user     = fb_auth.sign_in_with_email_and_password(email, pwd)
+                id_token = user["idToken"]
+                decoded  = admin_auth.verify_id_token(id_token)
+
+                # ─── NEW: allow-list check ───
+                allowed = st.secrets["ALLOW"]["users"]
+                user_email = decoded.get("email", "")
+                if user_email not in allowed:
+                    st.error("⛔ You are not authorized to use this app.")
+                    st.stop()
+
+                # ─── success: persist & rerun ───
+                st.session_state.user     = decoded
+                st.session_state.id_token = id_token
+                st.rerun()
+
+            except Exception as e:
+                st.error(f"Login failed: {e}")
+
+    st.stop()
+
+
+# 4️⃣ LOGOUT BUTTON
+st.sidebar.write(f"👤 {st.session_state.user['email']}")
+if st.sidebar.button("Logout"):
+    st.session_state.clear()
+    st.rerun()
+
 
 # ---- Config ----
 es = Elasticsearch(st.secrets["ES_CLOUD_URL"], api_key=st.secrets["ES_API_KEY"])
@@ -80,7 +161,7 @@ def append_feedback_log(entry: dict):
         json.dump(data, f, indent=2)
 
 # ---- UI ----
-st.set_page_config(page_title="IPERS OCR Chatbot", layout="wide")
+# st.set_page_config(page_title="IPERS OCR Chatbot", layout="wide")
 st.sidebar.title("Feedback log")
 if os.path.exists(FEEDBACK_LOG_PATH):
     with open(FEEDBACK_LOG_PATH, "r") as f:
