@@ -189,16 +189,34 @@ for idx, m in enumerate(st.session_state.history):
         args=[idx],
     )
 
+def append_feedback_log(entry: dict):
+    # 1) existing local‐file log
+    if os.path.exists(FEEDBACK_LOG_PATH):
+        with open(FEEDBACK_LOG_PATH, "r") as f:
+            data = json.load(f)
+    else:
+        data = []
+    data.append(entry)
+    with open(FEEDBACK_LOG_PATH, "w") as f:
+        json.dump(data, f, indent=2)
+
+    # 2) new: push to Firestore
+    try:
+        # you can name your collection anything; here "feedback_logs"
+        firebase_db.collection("feedback_logs").add(entry)
+    except Exception as e:
+        st.error(f"⚠️ Failed to push feedback to Firestore: {e}")
+
 def save_feedback(index):
     fb = st.session_state.get(f"feedback_{index}")
     if fb is None:
         return
-    # update in-memory history
     msg = st.session_state.history[index]
     msg["feedback"] = fb
-    # append to disk
+
     entry = {
         "timestamp": datetime.utcnow().isoformat(),
+        "user_email": st.session_state.user.get("email"),
         "prompt": msg["prompt"],
         "answer": msg["answer"],
         "feedback": fb
