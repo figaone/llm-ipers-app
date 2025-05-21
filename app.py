@@ -261,6 +261,17 @@ if prompt := st.chat_input("Ask a question..."):
     answer = ask_gpt_with_context(prompt)
     st.chat_message("assistant").write(answer)
 
+    # ─── Push the response immediately to Firestore ───
+    try:
+        firebase_db.collection("responses").add({
+            "timestamp":   datetime.utcnow().isoformat(),
+            "user_email":  st.session_state.user.get("email"),
+            "prompt":      prompt,
+            "answer":      answer
+        })
+    except Exception as e:
+        st.error(f"⚠️ Failed to log response to Firestore: {e}")
+
     # add to history
     st.session_state.history.append({"prompt": prompt, "answer": answer})
     idx = len(st.session_state.history) - 1
