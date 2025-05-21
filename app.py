@@ -88,6 +88,37 @@ if st.sidebar.button("Logout"):
     st.session_state.clear()
     st.rerun()
 
+# ─── GUARDRAIL POPUP ───
+if "guard_shown" not in st.session_state:
+    st.markdown("### ⚠️ Please note")
+    st.markdown(
+        """
+        • **Data coverage:** January 1, 2018 – December 31, 2021  
+        • **Source:** OCR-processed IPERS investment documents  
+        • **Privacy:** The chatbot will not surface any sensitive or private information beyond what’s in the scanned documents.  
+
+        **This is an early-stage prototype**  
+        - The model may occasionally produce incorrect, incomplete, or misleading answers.  
+        - We are actively working to expand the dataset and refine the AI so its accuracy improves over time.  
+
+        **What it can do:**  
+        - Answer factual questions about document content, metadata, investment periods, document groups, etc.  
+
+        **What it can’t do:**  
+        - Provide legal, financial, or personal advice  
+        - Speculate beyond the OCR’d text or outside the 2018–2021 window  
+        - Retrieve any data published after 2021  
+        - Display private or sensitive data not present in the OCR’d documents  
+
+        **Tip:** To get the most accurate and relevant answers, please narrow your question by adding specific filters—such as date ranges, document group names, or keywords—to give the model clearer context.  
+
+        Thank you for your patience and understanding as we continue to enhance this prototype.
+        """
+    )
+    if st.button("I Understand, Continue"):
+        st.session_state.guard_shown = True
+        st.rerun()   # <-- immediately restart so we skip this block on this same click
+    st.stop()
 
 # ---- Config ----
 es = Elasticsearch(st.secrets["ES_CLOUD_URL"], api_key=st.secrets["ES_API_KEY"])
